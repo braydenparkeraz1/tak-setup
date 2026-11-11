@@ -27,7 +27,7 @@
          Ephemeral OFF, Pre-approved OFF, Tags tag:client, expires in 1 day. Send it to the employee.
       2. The employee opens PowerShell as administrator (Start > type PowerShell > right-click Windows PowerShell >
          Run as administrator) and pastes:
-             irm https://raw.githubusercontent.com/OWNER/REPO/main/TAKSetup.ps1 | iex
+             irm https://raw.githubusercontent.com/braydenparkeraz1/tak-setup/main/TAKSetup.ps1 | iex
       3. They paste the one-time code when asked, and you approve the device in the admin console.
     Windows PowerShell 5.1 (built into Windows 10/11). No secrets in this file: it is public on purpose.
 #>

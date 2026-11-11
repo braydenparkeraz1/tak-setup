@@ -15,7 +15,7 @@ joining the network needs a one-time code that IT creates for each PC.
 4. **They paste this and press Enter:**
 
    ```powershell
-   irm https://raw.githubusercontent.com/OWNER/REPO/main/TAKSetup.ps1 | iex
+   irm https://raw.githubusercontent.com/braydenparkeraz1/tak-setup/main/TAKSetup.ps1 | iex
    ```
 
 5. **They type their name and paste the one-time code** when asked. You approve the device in the admin
