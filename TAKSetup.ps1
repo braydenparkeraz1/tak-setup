@@ -1,41 +1,7 @@
-<#
-.SYNOPSIS
-    TAK Remote Access Setup: connects this PC to The Alt Key PLLC's office network for remote work.
-
-.DESCRIPTION
-    Run by IT with the employee during onboarding. What it does, in order (everything is printed and logged to
-    C:\ProgramData\TAKRemoteAccess\setup-script.log):
-
-      1. Checks BitLocker (read-only): the Windows drive must be protected, or encrypting with a TPM protector.
-         It never turns BitLocker on and never reads recovery keys.
-      2. Asks for the employee's name and turns it into a device name (jane-smith-7f3a; the code is unique to this PC).
-      3. Downloads the official Tailscale, RustDesk and OpenSSH installers from their vendors and refuses any whose
-         SHA-256 doesn't match the value pinned below or whose Authenticode signature isn't valid and from that vendor.
-      4. Installs Tailscale and joins the company tailnet as tag:client with a one-time code from IT (nothing secret is
-         stored in this file), then waits for IT to approve the device. The IT dashboard adds Remote Desktop
-         (tag:rdp-client) once it has seen BitLocker on.
-      5. Installs RustDesk: direct connections from Tailscale addresses only, the employee clicks Accept for every
-         session, never RustDesk's public servers.
-      6. Installs OpenSSH Server for IT: key logins only (IT's public keys below), only from Tailscale addresses, only as
-         the local administrator "tak-it", whose random password nobody knows and which can't sign in at the keyboard
-         or over Remote Desktop.
-      7. Tells the IT dashboard to check this PC now, and puts "TAK Remote Desktop" and "Get IT Help" on the desktop.
-
-.NOTES
-    HOW TO RUN (IT, on a call with the employee):
-      1. Create a one-time code: Tailscale admin console > Settings > Keys > Generate auth key: Reusable OFF,
-         Ephemeral OFF, Pre-approved OFF, Tags tag:client, expires in 1 day. Send it to the employee.
-      2. The employee opens PowerShell as administrator (Start > type PowerShell > right-click Windows PowerShell >
-         Run as administrator) and pastes:
-             irm https://raw.githubusercontent.com/braydenparkeraz1/tak-setup/main/TAKSetup.ps1 | iex
-      3. They paste the one-time code when asked, and you approve the device in the admin console.
-    Windows PowerShell 5.1 (built into Windows 10/11). No secrets in this file: it is public on purpose.
-#>
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'   # PowerShell 5.1's progress bar slows downloads down a lot
+$ProgressPreference = 'SilentlyContinue'
 
-# -- settings (filled in by build-script.ps1) ---------------------------------------------------------
 $ScriptVersion    = '0.2'
 $SshAdminKeys     = @('ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAFTFY/WOtlFnxMuD4Htrke0n+zFf6lCru13ip1E2sxC tak-it@brayden-desktop', 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICMlH+y4irncqn6Vmjgwmm+VlDOcgBawoRVoIqQ7rQ// it-dashboard')
 $Installers       = @{
@@ -54,7 +20,6 @@ $SshAccount       = 'tak-it'
 $TailnetRanges    = @('100.64.0.0/10', 'fd7a:115c:a1e0::/48')
 $DataDir          = Join-Path $env:ProgramData 'TAKRemoteAccess'
 
-# Any error nothing else caught: show it and wait, instead of the window closing before anyone can read it.
 trap {
     $msg = "Setup stopped unexpectedly: $($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))"
     try { Add-Content -LiteralPath (Join-Path $env:ProgramData 'TAKRemoteAccess\setup-script.log') -Value "$(Get-Date -Format s) ERROR $msg" -Encoding UTF8 } catch { }
@@ -65,7 +30,6 @@ trap {
     [Environment]::Exit(1)
 }
 
-# -- elevation ----------------------------------------------------------------------------------------
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host ''
@@ -76,9 +40,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     return
 }
 
-# -- output and log -----------------------------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
-# Admins own the data folder; everyone else may only read it (a standard user could otherwise pre-create it).
 & icacls.exe $DataDir /setowner '*S-1-5-32-544' | Out-Null
 & icacls.exe $DataDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
 $LogFile = Join-Path $DataDir 'setup-script.log'
@@ -88,7 +50,6 @@ function Write-Log([string]$Message, [string]$Level = 'INFO') {
     Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
 }
 function Hide-Secrets([string]$Text) { $Text -replace 'tskey-[A-Za-z0-9]+-[A-Za-z0-9]+', 'tskey-****' }
-# On screen: short, plain English for employees. Technical detail goes to the log only (Note).
 function Say([string]$Message) { Write-Host "   $Message"; Write-Log $Message }
 function Note([string]$Message) { Write-Log $Message }
 $script:StepNo = 0
@@ -108,7 +69,6 @@ function Fail([string]$Message, [string]$Detail = '') {
     [Environment]::Exit(1)
 }
 
-# Runs an exe directly (no shell) and returns its exit code and output.
 function Invoke-Exe([string]$Path, [string[]]$Arguments, [int]$TimeoutSeconds = 300) {
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $Path
@@ -136,7 +96,6 @@ if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -
     Fail "This setup only supports standard (Intel/AMD) Windows computers. Please contact $SupportContact."
 }
 
-# -- 1. BitLocker (read-only) -------------------------------------------------------------------------
 Step 'Checking this computer'
 $drive = $env:SystemDrive
 $bitLockerState = 'unavailable'
@@ -173,7 +132,6 @@ switch ($bitLockerState) {
     }
 }
 
-# -- 2. Device name -----------------------------------------------------------------------------------
 $guid = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography').MachineGuid
 if (-not $guid) { $guid = $env:COMPUTERNAME }
 $sha = [Security.Cryptography.SHA256]::Create()
@@ -186,7 +144,7 @@ function ConvertTo-DeviceName([string]$Name) {
     $lastDash = $true
     foreach ($c in $Name.Trim().Normalize([Text.NormalizationForm]::FormD).ToCharArray()) {
         if ([Globalization.CharUnicodeInfo]::GetUnicodeCategory($c) -eq [Globalization.UnicodeCategory]::NonSpacingMark) { continue }
-        if ($c -eq [char]0x27 -or $c -eq [char]0x2019) { continue }   # O'Neil -> oneil
+        if ($c -eq [char]0x27 -or $c -eq [char]0x2019) { continue }
         $l = [char]::ToLowerInvariant($c)
         if (($l -ge [char]'a' -and $l -le [char]'z') -or ($l -ge [char]'0' -and $l -le [char]'9')) {
             [void]$sb.Append($l); $lastDash = $false
@@ -210,10 +168,8 @@ while (-not $hostname) {
 }
 Say "IT will see this computer as: $hostname"
 
-# -- installer download + checks ----------------------------------------------------------------------
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-# A fresh folder only SYSTEM and Administrators can touch, so nobody can swap the file between the check and msiexec.
 function New-AdminOnlyFolder([string]$Prefix) {
     $dir = Join-Path $DataDir ("$Prefix-" + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $dir | Out-Null
@@ -228,7 +184,7 @@ function Install-VendorMsi([string]$Id, [string[]]$Properties) {
     try {
         Note "Downloading $($i.Name) $($i.Version) from $($i.Url)"
         Invoke-WebRequest -Uri $i.Url -OutFile $msi -UseBasicParsing
-        $hold = [IO.File]::Open($msi, 'Open', 'Read', 'Read')   # keep it unchanged until msiexec is done
+        $hold = [IO.File]::Open($msi, 'Open', 'Read', 'Read')
         try {
             $actual = (Get-FileHash -LiteralPath $msi -Algorithm SHA256).Hash
             if ($actual -ne $i.Sha256) { Fail 'A download was damaged or changed, so setup stopped.' "$($i.Name): SHA-256 $actual, expected $($i.Sha256)" }
@@ -252,11 +208,9 @@ function Install-VendorMsi([string]$Id, [string[]]$Properties) {
     }
 }
 
-# -- 3. Tailscale: install and join -------------------------------------------------------------------
 Step 'Connecting to the company network'
 $tailscale = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
 if (-not (Test-Path $tailscale)) {
-    # TS_NOLAUNCH: no tray app in the employee's session (it would take Tailscale over for that account).
     Install-VendorMsi 'tailscale' @('TS_NOLAUNCH=1')
     $deadline = (Get-Date).AddSeconds(60)
     while (-not (Get-Service Tailscale -ErrorAction SilentlyContinue | Where-Object Status -eq 'Running') -and (Get-Date) -lt $deadline) { Start-Sleep 2 }
@@ -283,7 +237,6 @@ if ($status -and $status.BackendState -eq 'Running' -and (Test-Ours $status)) {
     if ($status -and $status.BackendState -eq 'Running') {
         Fail "This computer is already connected to a different private network (Tailscale), so setup stopped." "suffix=$($status.MagicDNSSuffix)"
     }
-    # The one-time code from IT (a single-use Tailscale auth key): typed or pasted, never shown, never logged.
     $AuthKey = ''
     for ($try = 1; $try -le 3 -and -not $AuthKey; $try++) {
         Write-Host ''
@@ -294,7 +247,6 @@ if ($status -and $status.BackendState -eq 'Running' -and (Test-Ours $status)) {
         else { Write-Host "   That doesn't look like the code from IT. Please copy it again (it starts with tskey-auth-)." -ForegroundColor Yellow }
     }
     if (-not $AuthKey) { Fail 'Setup needs the one-time code from IT to connect this computer.' 'no valid auth key entered' }
-    # The key goes to tailscale in a file in an admin-only folder: never on a command line, never in the log.
     $keyDir = New-AdminOnlyFolder 'join'
     $keyFile = Join-Path $keyDir 'authkey'
     try {
@@ -334,21 +286,19 @@ if ($status.BackendState -eq 'NeedsMachineAuth') {
 if (-not (Test-Ours $status)) { Fail 'This computer connected, but not to the company network as expected.' "suffix=$($status.MagicDNSSuffix)" }
 Say 'Connected.'
 
-# -- 4. RustDesk --------------------------------------------------------------------------------------
 Step 'Setting up IT support'
 $rustdesk = Join-Path $env:ProgramFiles 'RustDesk\rustdesk.exe'
 $rdOptions = [ordered]@{
-    'custom-rendezvous-server' = '127.0.0.1'   # never RustDesk's public servers
+    'custom-rendezvous-server' = '127.0.0.1'
     'relay-server'             = '127.0.0.1'
     'api-server'               = 'http://127.0.0.1'
-    'direct-server'            = 'Y'           # direct connections on tcp 21118 ...
-    'whitelist'                = ($TailnetRanges -join ',')   # ... from Tailscale addresses only
-    'approve-mode'             = 'click'       # the employee clicks Accept for every session
+    'direct-server'            = 'Y'
+    'whitelist'                = ($TailnetRanges -join ',')
+    'approve-mode'             = 'click'
     'enable-lan-discovery'     = 'N'
     'allow-auto-update'        = 'Y'
 }
 if (-not (Test-Path $rustdesk)) {
-    # Write the settings BEFORE installing: the service starts as soon as the MSI finishes.
     $rdConfig = Join-Path $env:SystemRoot 'ServiceProfiles\LocalService\AppData\Roaming\RustDesk\config\RustDesk2.toml'
     New-Item -ItemType Directory -Force -Path (Split-Path $rdConfig) | Out-Null
     $toml = "[options]`n" + (($rdOptions.GetEnumerator() | ForEach-Object { "$($_.Key) = '$($_.Value)'" }) -join "`n") + "`n"
@@ -371,7 +321,6 @@ foreach ($o in $rdOptions.GetEnumerator()) {
 if ($wrong) { Fail "IT's support tools couldn't be set up." ("RustDesk options: " + ($wrong -join '; ')) }
 Note 'RustDesk configured: direct connections from Tailscale addresses only, click-to-accept.'
 
-# -- 5. OpenSSH Server + tak-it -----------------------------------------------------------------------
 Note 'Setting up OpenSSH Server for IT.'
 $sshData = Join-Path $env:ProgramData 'ssh'
 New-Item -ItemType Directory -Force -Path $sshData | Out-Null
@@ -408,7 +357,6 @@ Subsystem sftp "$(($sshBin -replace '\\', '/'))/sftp-server.exe"
 Match Address $($TailnetRanges -join ',')
 	PubkeyAuthentication yes
 "@ -replace "`r`n", "`n"
-# Written BEFORE the MSI, which starts sshd straight away: it never runs with Microsoft's defaults.
 [IO.File]::WriteAllText((Join-Path $sshData 'sshd_config'), $sshdConfig + "`n", (New-Object Text.UTF8Encoding($false)))
 $keysFile = Join-Path $sshData 'administrators_authorized_keys'
 [IO.File]::WriteAllText($keysFile, "# Managed by TAK Remote Access Setup (script).`n" + ($SshAdminKeys -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
@@ -421,7 +369,6 @@ if (-not (Test-Path $sshdExe)) {
     Note 'OpenSSH Server is already installed.'
 }
 
-# The account IT's SSH key logs in to. Its password is random, never shown or stored: nobody knows it.
 $chars = [char[]]'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!#%+=?@'
 $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
 $bytes = New-Object byte[] 40
@@ -446,7 +393,6 @@ try {
     Write-Log "$SshAccount is already in $($admins.Name)."
 }
 
-# It may not sign in at the keyboard or over Remote Desktop: SSH with IT's key is the only way in.
 $sid = (Get-LocalUser -Name $SshAccount).SID.Value
 $secDir = New-AdminOnlyFolder 'rights'
 try {
@@ -471,7 +417,6 @@ try {
 }
 Write-Log "$SshAccount ($sid): denied local and Remote Desktop sign-in."
 
-# Firewall: only Tailscale addresses may reach port 22. The MSI's own rule allows any source: remove it.
 Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {
     $_.DisplayName -eq 'OpenSSH SSH Server Preview (sshd)' -or $_.Name -eq 'OpenSSH-Server-In-TCP' -or $_.DisplayName -eq 'TAK IT support (SSH)'
 } | Remove-NetFirewallRule
@@ -487,7 +432,6 @@ if ($agent) { Stop-Service ssh-agent -ErrorAction SilentlyContinue; Set-Service 
 Note "SSH configured: IT's keys only, only as $SshAccount, only from Tailscale addresses."
 Say 'Done. IT can only see your screen after you click Accept.'
 
-# -- 6. Tell the dashboard, shortcut, state -----------------------------------------------------------
 Step 'Finishing'
 try {
     $body = @{ volume = $drive; protectionStatus = [int]$vol.ProtectionStatus; conversionStatus = $conversion; setupVersion = "script-$ScriptVersion" } | ConvertTo-Json -Compress
@@ -508,8 +452,6 @@ $s.Description = 'Connect to The Alt Key remote desktop server'
 $s.Save()
 Note "Created $lnk."
 
-# "Get IT Help": a link to the IT dashboard's help page (no program to install). The page identifies this PC by its
-# company-network address, so it only works on this computer.
 $helpUrl = "http://${DashboardHost}:$IntakePort/help"
 $helpLink = "[InternetShortcut]`r`nURL=$helpUrl`r`nIconFile=$env:SystemRoot\System32\shell32.dll`r`nIconIndex=23`r`n"
 foreach ($folder in [Environment]::GetFolderPath('CommonDesktopDirectory'), [Environment]::GetFolderPath('CommonPrograms')) {
